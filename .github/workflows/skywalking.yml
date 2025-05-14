@@ -1,0 +1,113 @@
+name: Generate BanyanDB Mock Data
+on:
+  workflow_dispatch:
+    inputs:
+      banyandb_image_tag:
+        description: 'BanyanDB image tag'
+        required: true
+        default: '2de59d80f7edbc57ada66212bcfdc79f5b3b28a9'
+      oap_image_tag:
+        description: 'OAP image tag'
+        required: true
+        default: '4f4323a42b3b480412d225e49623c7bd34b879a7'
+      minus_days:
+        description: 'Number of days to subtract from the current date'
+        required: true
+        default: '3'
+  schedule:
+    - cron: '0 18 * * *'
+
+jobs:
+  generate-mock-data:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      BANYANDB_IMAGE_TAG: ${{ inputs.banyandb_image_tag }}
+      OAP_IMAGE_TAG: ${{ inputs.oap_image_tag }}
+      MINUS_DAYS: ${{ inputs.minus_days }}
+      COMPOSE_FILE_PATH: docker/docker-compose.yml
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          submodules: true
+      - uses: actions/setup-java@v4
+        with:
+          distribution: "temurin"
+          java-version: "17"
+          cache: "maven"
+      - name: Cache maven repository
+        uses: actions/cache@v4
+        with:
+          path: ~/.m2/repository
+          key: ${{ runner.os }}-maven-${{ hashFiles('data-mocker/**/pom.xml') }}
+          restore-keys: ${{ runner.os }}-maven-
+      - name: Prepare test services
+        shell: bash
+        run: ./mvnw -f data-mocker/pom.xml clean package
+      - name: Start Docker Compose
+        run: |
+          docker compose -f ${COMPOSE_FILE_PATH} up -d
+      - name: Monitor and copy segment files
+        id: file_monitor
+        run: |
+          CONTAINER_ID=$(docker compose -f ${COMPOSE_FILE_PATH} ps -q banyandb)
+          echo "⌛ monitoring segment files..."
+          found=false
+          for i in {1..60}; do
+            # check if segment files exist
+            if docker exec $CONTAINER_ID sh -c '[ -n "$(ls /tmp/measure-data/measure/data/day/seg* 2>/dev/null)" ]'; then
+              echo "✅ found segment files"
+          
+              # create and copy files
+                if [ -d "banyandb-files" ]; then
+                  rm -rf ./banyandb-files
+                fi
+              mkdir -p ./banyandb-files
+              docker cp $CONTAINER_ID:/tmp ./banyandb-files/
+              found=true
+              break
+            else
+              echo "⏳ didn't find segment files (retry $i/60)"
+              sleep 10
+            fi
+          done
+          if $found; then
+            echo "✅ segment files copied to ./banyandb-files"
+          else
+            echo "❌ segment files not found"
+            exit 1
+          fi
+      - name: Commit changes
+        run: |
+          git config --global user.name "GitHub Actions"
+          git config --global user.email "actions@github.com"
+          git add ./banyandb-files
+          if ! git diff --quiet --cached; then
+            git commit -m "Update: Banyandb files from ${{ inputs.oap_image_tag }}:${{ inputs.banyandb_image_tag }} [skip ci]"
+            git push origin main
+          else
+            echo "🟢 no changes to commit"
+          fi
+# open this if you need container logs for debug
+#      - name: Get container logs
+#        run: |
+#          mkdir -p ./container-logs
+#
+#          docker ps -a --format '{{.ID}} {{.Names}}' | while read -r id name; do
+#            echo "collecting container logs: $name ($id)"
+#            safe_name=$(echo "$name" | tr '/' '_' | tr ':' '_')
+#            docker logs "$id" > "./container-logs/${safe_name}.log" 2>&1
+#            docker inspect "$id" > "./container-logs/${safe_name}_inspect.json"
+#          done
+#          ls -lh ./container-logs/
+
+      - name: Upload logs as artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: all-container-logs
+          path: ./container-logs/*
+      - name: Cleanup
+        if: always()
+        run: docker compose -f ${COMPOSE_FILE_PATH} down -v
