@@ -14,8 +14,6 @@ on:
         description: 'Number of days to subtract from the current date'
         required: true
         default: '3'
-  schedule:
-    - cron: '0 18 * * *'
 
 jobs:
   generate-mock-data:
@@ -27,6 +25,7 @@ jobs:
       OAP_IMAGE_TAG: ${{ inputs.oap_image_tag }}
       MINUS_DAYS: ${{ inputs.minus_days }}
       COMPOSE_FILE_PATH: docker/docker-compose.yml
+      BRANCH_NAME: data-${{ inputs.banyandb_image_tag }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -52,6 +51,8 @@ jobs:
       - name: Monitor and copy segment files
         id: file_monitor
         run: |
+          git config --global user.name "GitHub Actions"
+          git config --global user.email "actions@github.com"
           CONTAINER_ID=$(docker compose -f ${COMPOSE_FILE_PATH} ps -q banyandb)
           echo "⌛ monitoring segment files..."
           found=false
@@ -59,7 +60,16 @@ jobs:
             # check if segment files exist
             if docker exec $CONTAINER_ID sh -c '[ -n "$(ls /tmp/measure-data/measure/data/day/seg* 2>/dev/null)" ]'; then
               echo "✅ found segment files"
-          
+              git fetch
+              if git show-ref --verify --quiet refs/remotes/origin/${BRANCH_NAME}; then
+                git checkout ${BRANCH_NAME}
+              else
+                git checkout --orphan ${BRANCH_NAME}
+                git rm -rf .
+                rm -rf *
+                git commit --allow-empty -m "init"
+                git push -u origin ${BRANCH_NAME}
+              fi
               # create and copy files
                 if [ -d "banyandb-files" ]; then
                   rm -rf ./banyandb-files
@@ -81,15 +91,14 @@ jobs:
           fi
       - name: Commit changes
         run: |
-          git config --global user.name "GitHub Actions"
-          git config --global user.email "actions@github.com"
+          rm -rf ./banyandb-files/tmp/metadata
           git add ./banyandb-files
-          if ! git diff --quiet --cached; then
-            git commit -m "Update: Banyandb files from ${{ inputs.oap_image_tag }}:${{ inputs.banyandb_image_tag }} [skip ci]"
-            git push origin main
-          else
-            echo "🟢 no changes to commit"
-          fi
+          git commit -m "Update: files from  BanyanDB ${{ inputs.banyandb_image_tag }} and OAP: ${{ inputs.oap_image_tag }}"
+          
+          GIT_SEQUENCE_EDITOR="sed -i '2s/pick/squash/'" git rebase -i HEAD~2 && \
+          git commit --amend -m "Squashed by GitHub Actions" && \
+          git push --force-with-lease
+
 # open this if you need container logs for debug
 #      - name: Get container logs
 #        run: |
@@ -103,11 +112,8 @@ jobs:
 #          done
 #          ls -lh ./container-logs/
 
-      - name: Upload logs as artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: all-container-logs
-          path: ./container-logs/*
-      - name: Cleanup
-        if: always()
-        run: docker compose -f ${COMPOSE_FILE_PATH} down -v
+#      - name: Upload logs as artifact
+#        uses: actions/upload-artifact@v4
+#        with:
+#          name: all-container-logs
+#          path: ./container-logs/*
