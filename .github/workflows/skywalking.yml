@@ -14,6 +14,8 @@ on:
         description: 'Number of days to subtract from the current date'
         required: true
         default: '3'
+  schedule:
+    - cron: '0 18 * * *'
 
 jobs:
   generate-mock-data:
@@ -21,9 +23,9 @@ jobs:
     permissions:
       contents: write
     env:
-      BANYANDB_IMAGE_TAG: ${{ inputs.banyandb_image_tag }}
-      OAP_IMAGE_TAG: ${{ inputs.oap_image_tag }}
-      MINUS_DAYS: ${{ inputs.minus_days }}
+      BANYANDB_IMAGE_TAG: ${{ inputs.banyandb_image_tag || '2de59d80f7edbc57ada66212bcfdc79f5b3b28a9' }}
+      OAP_IMAGE_TAG: ${{ inputs.oap_image_tag || '4f4323a42b3b480412d225e49623c7bd34b879a7' }}
+      MINUS_DAYS: ${{ inputs.minus_days || '3' }}
       COMPOSE_FILE_PATH: docker/docker-compose.yml
       BRANCH_NAME: data-${{ inputs.banyandb_image_tag }}
     steps:
@@ -94,9 +96,6 @@ jobs:
           rm -rf ./banyandb-files/tmp/metadata
           git add ./banyandb-files
           git commit -m "Update: files from  BanyanDB ${{ inputs.banyandb_image_tag }} and OAP: ${{ inputs.oap_image_tag }}"
-          
-          GIT_SEQUENCE_EDITOR="sed -i '2s/pick/squash/'" git rebase -i HEAD~2 && \
-          git commit --amend -m "Squashed by GitHub Actions" && \
           git push --force-with-lease
 
 # open this if you need container logs for debug
